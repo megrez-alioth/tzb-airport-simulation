@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v1.dtd">
+
+<network name="simplified aviation network">
+   <nodes>
+      <node id="OERK" x="-2955.03289597882" y="2841.070513606123" />
+      <node id="OIIE" x="896.3453336267219" y="-3138.587029539052" />
+      <node id="OMDB" x="-146.0789947555576" y="3467.344626018175" />
+      <node id="YSSY" x="-3188.572594222363" y="-2854.276648244003" />
+      <node id="ZBAD" x="624.0063395544229" y="-101.2424653016145" />
+      <node id="ZBHH" x="708.1208634083389" y="-357.2972858024276" />
+      <node id="ZBYN" x="610.081864671943" y="-303.2317255698551" />
+      <node id="ZGGG" x="-356.5363518627703" y="49.53831782138778" />
+      <node id="ZGSZ" x="-333.566173587455" y="101.357563872832" />
+      <node id="ZJSY" x="-592.4696551875379" y="138.3843862110542" />
+      <node id="ZLLL" x="508.083236761518" y="-608.7370054921626" />
+      <node id="ZSJN" x="525.4956964980071" y="228.3616135689099" />
+      <node id="ZSPD" x="297.7252900710116" y="52.40016381254073" />
+      <node id="ZSSS" x="90.03163702746622" y="-508.7830449693061" />
+      <node id="ZSWZ" x="50.74864763989383" y="204.01431464773" />
+      <node id="ZUCK" x="84.45700491086988" y="-255.5692445677528" />
+      <node id="ZUUU" x="117.4046148746559" y="-475.8225369635356" />
+      <node id="ZWSH" x="709.4605417722098" y="-1912.979386888478" />
+   </nodes>
+   <links capperiod="01:00:00">
+      <link id="OERK-ZGSZ" from="OERK" to="ZGSZ" length="3791.85" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="OIIE-ZBAD" from="OIIE" to="ZBAD" length="3049.53" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="OMDB-ZGGG" from="OMDB" to="ZGGG" length="3424.28" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="YSSY-ZGSZ" from="YSSY" to="ZGSZ" length="4109.36" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZBAD-OIIE" from="ZBAD" to="OIIE" length="3049.53" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZBAD-ZJSY" from="ZBAD" to="ZJSY" length="1239.85" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZBAD-ZUCK" from="ZBAD" to="ZUCK" length="561.19" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZBHH-ZGGG" from="ZBHH" to="ZGGG" length="1139.74" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZBYN-ZGGG" from="ZBYN" to="ZGGG" length="1028.98" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-OMDB" from="ZGGG" to="OMDB" length="3424.28" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZBHH" from="ZGGG" to="ZBHH" length="1139.74" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZBYN" from="ZGGG" to="ZBYN" length="1028.98" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZSJN" from="ZGGG" to="ZSJN" length="899.98" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZSSS" from="ZGGG" to="ZSSS" length="714.94" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZSWZ" from="ZGGG" to="ZSWZ" length="435.60" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGGG-ZWSH" from="ZGGG" to="ZWSH" length="2233.34" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGSZ-OERK" from="ZGSZ" to="OERK" length="3791.85" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGSZ-YSSY" from="ZGSZ" to="YSSY" length="4109.36" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGSZ-ZLLL" from="ZGSZ" to="ZLLL" length="1101.18" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZGSZ-ZUUU" from="ZGSZ" to="ZUUU" length="732.47" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZJSY-ZBAD" from="ZJSY" to="ZBAD" length="1239.85" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZLLL-ZGSZ" from="ZLLL" to="ZGSZ" length="1101.18" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZSJN-ZGGG" from="ZSJN" to="ZGGG" length="899.98" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZSPD-ZWSH" from="ZSPD" to="ZWSH" length="2008.04" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZSSS-ZGGG" from="ZSSS" to="ZGGG" length="714.94" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZSWZ-ZGGG" from="ZSWZ" to="ZGGG" length="435.60" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZUCK-ZBAD" from="ZUCK" to="ZBAD" length="561.19" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZUUU-ZGSZ" from="ZUUU" to="ZGSZ" length="732.47" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZWSH-ZGGG" from="ZWSH" to="ZGGG" length="2233.34" capacity="10" freespeed="0.12351038" permlanes="1" />
+      <link id="ZWSH-ZSPD" from="ZWSH" to="ZSPD" length="2008.04" capacity="10" freespeed="0.12351038" permlanes="1" />
+   </links>
+</network>

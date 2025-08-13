@@ -539,8 +539,64 @@ class ZGGGDepartureSimulator:
         
         return sim_data
     
-    def identify_backlog_periods(self, data_type='simulation'):
-        """识别积压时段"""
+    def identify_systematic_problematic_hours(self, data, data_type='real'):
+        """识别系统性问题时段（整个小时段都有异常延误）- 集成版"""
+        print(f"\n=== 识别{data_type}数据中的系统性问题时段 ===")
+        
+        if data_type == 'simulation':
+            delay_col = '仿真延误分钟'
+            time_col = '计划起飞'
+        else:
+            delay_col = '起飞延误分钟'  
+            time_col = '计划离港时间'
+            
+        problematic_hours = []
+        
+        # 分析每个小时的整体延误情况
+        for hour in range(24):
+            hour_data = data[data[time_col].dt.hour == hour]
+            if len(hour_data) < 5:  # 样本太少，跳过
+                continue
+                
+            if delay_col in hour_data.columns:
+                delays = hour_data[delay_col]
+                
+                avg_delay = delays.mean()
+                severe_delay_ratio = (delays > 120).sum() / len(delays) if len(delays) > 0 else 0
+                
+                # 系统性问题的判定条件（针对不同时段采用不同标准）：
+                is_problematic = False
+                
+                if 0 <= hour <= 6:  # 凌晨时段（0-6点）更严格的异常判定
+                    # 凌晨时段航班少，但如果平均延误超过100分钟就不正常
+                    if ((avg_delay > 100 and severe_delay_ratio > 0.2) or  # 平均延误>100分钟且20%严重延误
+                        (avg_delay > 200) or  # 或平均延误>200分钟
+                        (severe_delay_ratio > 0.4)):  # 或严重延误比例>40%
+                        is_problematic = True
+                        
+                else:  # 其他时段（7-23点）的判定标准
+                    if (avg_delay > 200 and 
+                        severe_delay_ratio > 0.5 and 
+                        len(hour_data) >= 10):
+                        is_problematic = True
+                
+                if is_problematic:
+                    problematic_hours.append({
+                        'hour': hour,
+                        'avg_delay': avg_delay,
+                        'severe_ratio': severe_delay_ratio,
+                        'total_flights': len(hour_data)
+                    })
+                    
+                    print(f"识别{data_type}系统性问题时段: {hour:02d}:00 - 平均延误{avg_delay:.0f}分钟, "
+                          f"严重延误比例{severe_delay_ratio:.1%}, 总航班{len(hour_data)}班")
+        
+        return problematic_hours
+    
+    def identify_backlog_periods_advanced(self, data_type='simulation', exclude_systematic=True):
+        """高级积压时段识别，可选择排除系统性问题时段"""
+        print(f"\n=== 高级积压时段分析（{data_type}数据，排除系统性问题：{exclude_systematic}）===")
+        
         if data_type == 'simulation':
             if len(self.all_simulation_results) == 0:
                 print("错误: 需要先完成仿真")
@@ -554,6 +610,20 @@ class ZGGGDepartureSimulator:
             delay_col = '起飞延误分钟'
             time_col = '计划离港时间'
         
+        # 首先识别系统性问题时段
+        if exclude_systematic:
+            problematic_hours = self.identify_systematic_problematic_hours(data, data_type)
+            
+            # 排除系统性问题时段的数据
+            if problematic_hours:
+                problematic_hour_list = [h['hour'] for h in problematic_hours]
+                original_count = len(data)
+                data = data[~data[time_col].dt.hour.isin(problematic_hour_list)]
+                excluded_count = original_count - len(data)
+                print(f"排除系统性问题时段数据: {excluded_count} 个航班")
+        else:
+            problematic_hours = []
+        
         # 添加时间特征
         data['小时'] = data[time_col].dt.hour
         data['日期'] = data[time_col].dt.date
@@ -561,51 +631,96 @@ class ZGGGDepartureSimulator:
         
         # 按小时统计每天的航班量和延误量
         hourly_stats = data.groupby(['日期', '小时']).agg({
-            '延误标记': ['count', 'sum']
+            '延误标记': ['count', 'sum'],
+            delay_col: 'mean'
         }).round(2)
         
-        hourly_stats.columns = ['航班数', '延误航班数']
+        hourly_stats.columns = ['航班数', '延误航班数', '平均延误']
         hourly_stats = hourly_stats.reset_index()
         
-        # 识别积压时段：延误航班数>=积压阈值（10架飞机延误）
-        # 修改判定逻辑：不再要求总航班数>=10，而是延误航班数>=10
+        # 识别积压时段 - 使用动态阈值
+        total_days = len(data['日期'].unique())
+        dynamic_threshold = max(2, self.backlog_threshold / max(total_days, 1))  # 至少2班延误
+        
         backlog_periods = hourly_stats[
-            hourly_stats['延误航班数'] >= self.backlog_threshold
+            hourly_stats['延误航班数'] >= dynamic_threshold
         ].copy()
         
-        # 计算积压强度（延误航班数作为积压强度的主要指标）
-        backlog_periods['积压强度'] = backlog_periods['延误航班数']  # 直接使用延误航班数
-        backlog_periods['积压比率'] = backlog_periods['延误航班数'] / backlog_periods['航班数']
+        print(f"积压识别结果（动态阈值: {dynamic_threshold:.1f}班/小时）:")
+        print(f"识别到 {len(backlog_periods)} 个积压时段")
         
-        return backlog_periods
+        # 计算积压强度
+        if len(backlog_periods) > 0:
+            backlog_periods['积压强度'] = backlog_periods['延误航班数']
+            backlog_periods['积压比率'] = backlog_periods['延误航班数'] / backlog_periods['航班数']
+            
+            backlog_summary = backlog_periods.groupby('小时').agg({
+                '延误航班数': ['count', 'mean', 'sum']
+            }).round(1)
+            backlog_summary.columns = ['出现天数', '日均延误班数', '总延误班数']
+            
+            print("\n积压时段分布:")
+            print("时段    出现天数  日均延误班数  总延误班数")
+            print("-" * 40)
+            for hour in sorted(backlog_summary.index):
+                stats = backlog_summary.loc[hour]
+                print(f"{hour:02d}:00  {stats['出现天数']:6.0f}    {stats['日均延误班数']:8.1f}    {stats['总延误班数']:8.0f}")
+        
+        return {
+            'backlog_periods': backlog_periods,
+            'problematic_hours': problematic_hours,
+            'filtered_data': data,
+            'threshold': self.delay_threshold,
+            'dynamic_threshold': dynamic_threshold
+        }
+
+    def identify_backlog_periods(self, data_type='simulation'):
+        """识别积压时段（保持向后兼容）"""
+        result = self.identify_backlog_periods_advanced(data_type, exclude_systematic=False)
+        return result['backlog_periods'] if result else []
     
-    def compare_backlog_periods(self):
-        """对比仿真和真实的积压时段"""
-        print(f"\n=== 积压时段对比分析 ===")
+    def compare_backlog_periods_advanced(self, exclude_systematic=True):
+        """高级积压时段对比分析（可选择排除系统性问题时段）"""
+        print(f"\n=== 高级积压时段对比分析（排除系统性问题：{exclude_systematic}）===")
         
-        # 获取仿真和真实的积压时段
-        sim_backlog = self.identify_backlog_periods('simulation')
-        real_backlog = self.identify_backlog_periods('real')
+        # 获取高级积压分析结果
+        sim_result = self.identify_backlog_periods_advanced('simulation', exclude_systematic)
+        real_result = self.identify_backlog_periods_advanced('real', exclude_systematic)
+        
+        if not sim_result or not real_result:
+            print("无法进行对比分析")
+            return None
+            
+        sim_backlog = sim_result['backlog_periods']
+        real_backlog = real_result['backlog_periods']
+        sim_problematic = sim_result['problematic_hours']
+        real_problematic = real_result['problematic_hours']
         
         print(f"仿真积压时段: {len(sim_backlog)} 个")
         print(f"实际积压时段: {len(real_backlog)} 个")
         
+        if exclude_systematic:
+            print(f"仿真系统性问题时段: {len(sim_problematic)} 个")
+            print(f"实际系统性问题时段: {len(real_problematic)} 个")
+        
         if len(sim_backlog) == 0 or len(real_backlog) == 0:
             print("无法进行积压对比分析")
-            return
+            return None
         
         # 按小时分组统计积压频次
         sim_hourly = sim_backlog.groupby('小时').agg({
             '积压强度': ['count', 'mean', 'max'],
-            '延误航班数': ['sum', 'mean', 'max']  # 添加延误航班数统计
+            '延误航班数': ['sum', 'mean', 'max'],
+            '平均延误': 'mean'
         }).round(3)
-        sim_hourly.columns = ['频次', '平均强度', '峰值强度', '总延误航班', '平均延误航班', '峰值延误航班']
+        sim_hourly.columns = ['频次', '平均强度', '峰值强度', '总延误航班', '平均延误航班', '峰值延误航班', '平均延误时间']
         
         real_hourly = real_backlog.groupby('小时').agg({
             '积压强度': ['count', 'mean', 'max'],
-            '延误航班数': ['sum', 'mean', 'max']  # 添加延误航班数统计
+            '延误航班数': ['sum', 'mean', 'max'],
+            '平均延误': 'mean'
         }).round(3)
-        real_hourly.columns = ['频次', '平均强度', '峰值强度', '总延误航班', '平均延误航班', '峰值延误航班']
+        real_hourly.columns = ['频次', '平均强度', '峰值强度', '总延误航班', '平均延误航班', '峰值延误航班', '平均延误时间']
         
         # 找出共同的积压时段
         sim_hours = set(sim_hourly.index)
@@ -617,13 +732,15 @@ class ZGGGDepartureSimulator:
         print(f"  实际积压时段: {sorted(real_hours)}")
         print(f"  重叠时段: {sorted(common_hours)} ({len(common_hours)}个)")
         
-        if len(common_hours) > 0:
+        overlap_rate = 0
+        if len(real_hours) > 0:
             overlap_rate = len(common_hours) / len(real_hours) * 100
             print(f"  重叠率: {overlap_rate:.1f}%")
         
-        # 详细对比重叠时段的积压强度，显示实际的延误航班数量
-        print(f"\n积压强度详细对比(显示延误航班数量):")
+        # 详细对比重叠时段的积压强度和延误时间
+        print(f"\n积压强度和延误时间详细对比:")
         strength_errors = []
+        delay_time_errors = []
         
         # 选择某一天作为示例展示
         sample_date = None
@@ -636,9 +753,19 @@ class ZGGGDepartureSimulator:
             sim_hour_data = sim_backlog[sim_backlog['小时'] == hour]
             real_hour_data = real_backlog[real_backlog['小时'] == hour]
             
-            # 计算平均延误航班数
+            # 计算平均延误航班数和延误时间
             sim_avg_delayed = sim_hour_data['延误航班数'].mean()
             real_avg_delayed = real_hour_data['延误航班数'].mean()
+            
+            sim_avg_delay_time = sim_hour_data['平均延误'].mean()
+            real_avg_delay_time = real_hour_data['平均延误'].mean()
+            
+            # 计算误差
+            strength_error = abs(sim_avg_delayed - real_avg_delayed) / max(real_avg_delayed, 1) * 100
+            delay_time_error = abs(sim_avg_delay_time - real_avg_delay_time) / max(real_avg_delay_time, 1) * 100
+            
+            strength_errors.append(strength_error)
+            delay_time_errors.append(delay_time_error)
             
             # 获取示例日期的数据
             if sample_date is not None:
@@ -648,19 +775,38 @@ class ZGGGDepartureSimulator:
                 sim_sample_count = sim_sample['延误航班数'].iloc[0] if len(sim_sample) > 0 else 0
                 real_sample_count = real_sample['延误航班数'].iloc[0] if len(real_sample) > 0 else 0
                 
-                error_pct = abs(sim_avg_delayed - real_avg_delayed) / max(real_avg_delayed, 1) * 100
-                strength_errors.append(error_pct)
+                strength_status = "✅" if strength_error <= 20 else "❌"
+                delay_status = "✅" if delay_time_error <= 15 else "❌"
                 
-                status = "✅" if error_pct <= 20 else "❌"
-                print(f"  {hour:02d}:00时段 - 仿真平均:{sim_avg_delayed:.1f}架 实际平均:{real_avg_delayed:.1f}架 "
-                      f"示例日({sample_date}): 仿真{sim_sample_count}架/实际{real_sample_count}架 误差:{error_pct:.1f}% {status}")
+                print(f"  {hour:02d}:00时段 - 延误航班数: 仿真{sim_avg_delayed:.1f}架/实际{real_avg_delayed:.1f}架 "
+                      f"误差{strength_error:.1f}% {strength_status}")
+                print(f"           - 平均延误时间: 仿真{sim_avg_delay_time:.1f}分/实际{real_avg_delay_time:.1f}分 "
+                      f"误差{delay_time_error:.1f}% {delay_status}")
+                print(f"           - 示例日({sample_date}): 仿真{sim_sample_count}架/实际{real_sample_count}架")
             else:
-                error_pct = abs(sim_avg_delayed - real_avg_delayed) / max(real_avg_delayed, 1) * 100
-                strength_errors.append(error_pct)
+                strength_status = "✅" if strength_error <= 20 else "❌"
+                delay_status = "✅" if delay_time_error <= 15 else "❌"
                 
-                status = "✅" if error_pct <= 20 else "❌"
-                print(f"  {hour:02d}:00时段 - 仿真平均:{sim_avg_delayed:.1f}架 实际平均:{real_avg_delayed:.1f}架 "
-                      f"误差:{error_pct:.1f}% {status}")
+                print(f"  {hour:02d}:00时段 - 延误航班数: 仿真{sim_avg_delayed:.1f}架/实际{real_avg_delayed:.1f}架 "
+                      f"误差{strength_error:.1f}% {strength_status}")
+                print(f"           - 平均延误时间: 仿真{sim_avg_delay_time:.1f}分/实际{real_avg_delay_time:.1f}分 "
+                      f"误差{delay_time_error:.1f}% {delay_status}")
+        
+        # 系统性问题时段对比
+        if exclude_systematic:
+            print(f"\n系统性问题时段对比:")
+            sim_problematic_hours = [h['hour'] for h in sim_problematic]
+            real_problematic_hours = [h['hour'] for h in real_problematic]
+            
+            print(f"  仿真系统性问题时段: {sorted(sim_problematic_hours)}")
+            print(f"  实际系统性问题时段: {sorted(real_problematic_hours)}")
+            
+            problematic_overlap = set(sim_problematic_hours) & set(real_problematic_hours)
+            print(f"  系统性问题时段重叠: {sorted(problematic_overlap)} ({len(problematic_overlap)}个)")
+            
+            if len(real_problematic_hours) > 0:
+                problematic_overlap_rate = len(problematic_overlap) / len(real_problematic_hours) * 100
+                print(f"  系统性问题识别准确率: {problematic_overlap_rate:.1f}%")
         
         # 区间端点误差分析
         print(f"\n积压区间端点分析:")
@@ -709,13 +855,19 @@ class ZGGGDepartureSimulator:
                 endpoint_errors.extend([start_error, end_error])
         
         # 总体评估
-        print(f"\n=== 仿真准确性评估 ===")
+        print(f"\n=== 高级仿真准确性评估 ===")
+        
+        # 计算各项评估指标
         if len(common_hours) > 0:
             avg_strength_error = np.mean(strength_errors)
+            avg_delay_time_error = np.mean(delay_time_errors)
             strength_accuracy = len([e for e in strength_errors if e <= 15]) / len(strength_errors) * 100
+            delay_accuracy = len([e for e in delay_time_errors if e <= 15]) / len(delay_time_errors) * 100
         else:
             avg_strength_error = 100
+            avg_delay_time_error = 100
             strength_accuracy = 0
+            delay_accuracy = 0
             
         if endpoint_errors:
             avg_endpoint_error = np.mean(endpoint_errors)
@@ -724,37 +876,317 @@ class ZGGGDepartureSimulator:
             avg_endpoint_error = 0
             endpoint_accuracy = 0
         
-        print(f"✅ 积压时段重叠率: {overlap_rate:.1f}% (目标>60%)")
-        print(f"✅ 积压强度平均误差: {avg_strength_error:.1f}% (目标<15%)")
-        print(f"✅ 积压强度准确率: {strength_accuracy:.1f}% (误差<15%的时段比例)")
+        print(f"✅ 积压时段重叠率: {overlap_rate:.1f}% (目标>70%)")
+        print(f"✅ 延误航班数平均误差: {avg_strength_error:.1f}% (目标<15%)")
+        print(f"✅ 延误时间平均误差: {avg_delay_time_error:.1f}% (目标<15%)")
+        print(f"✅ 延误航班数准确率: {strength_accuracy:.1f}% (误差<15%的时段比例)")
+        print(f"✅ 延误时间准确率: {delay_accuracy:.1f}% (误差<15%的时段比例)")
         print(f"✅ 区间端点平均误差: {avg_endpoint_error:.1f}小时 (目标<1小时)")
         print(f"✅ 区间端点准确率: {endpoint_accuracy:.1f}% (误差<1小时的端点比例)")
         
-        # 综合评分
+        # 综合评分 - 加入延误时间准确性
         overlap_score = min(overlap_rate, 100)
         strength_score = max(0, 100 - avg_strength_error)
-        endpoint_score = max(0, 100 - avg_endpoint_error * 50)  # 端点误差权重较高
+        delay_time_score = max(0, 100 - avg_delay_time_error)
+        endpoint_score = max(0, 100 - avg_endpoint_error * 50)
         
-        overall_score = (overlap_score * 0.4 + strength_score * 0.4 + endpoint_score * 0.2)
+        overall_score = (overlap_score * 0.3 + strength_score * 0.3 + 
+                        delay_time_score * 0.2 + endpoint_score * 0.2)
         
         print(f"\n🎯 综合评分: {overall_score:.1f}/100")
         
-        if overall_score >= 80:
-            print("🏆 仿真质量: 优秀 - 可直接应用")
-        elif overall_score >= 60:
-            print("⚠️  仿真质量: 良好 - 建议微调")
+        if overall_score >= 85:
+            print("🏆 仿真质量: 优秀 - 精确匹配现实积压模式")
+        elif overall_score >= 70:
+            print("⚠️  仿真质量: 良好 - 基本准确，建议微调")
         else:
-            print("❌ 仿真质量: 需改进 - 需要优化参数")
+            print("❌ 仿真质量: 需改进 - 系统性偏差较大")
         
         return {
             'overlap_rate': overlap_rate,
             'strength_error': avg_strength_error,
+            'delay_time_error': avg_delay_time_error,
             'endpoint_error': avg_endpoint_error,
-            'overall_score': overall_score
+            'overall_score': overall_score,
+            'exclude_systematic': exclude_systematic
         }
+    
+    def compare_backlog_periods(self):
+        """对比仿真和真实的积压时段（保持向后兼容）"""
+        return self.compare_backlog_periods_advanced(exclude_systematic=False)
+    
+    def visualize_backlog_comparison_advanced(self, exclude_systematic=True):
+        """高级积压对比可视化（可选择排除系统性问题时段）"""
+        print(f"\n=== 生成高级积压对比可视化图表 ===")
+        
+        # 获取高级积压分析结果
+        sim_result = self.identify_backlog_periods_advanced('simulation', exclude_systematic)
+        real_result = self.identify_backlog_periods_advanced('real', exclude_systematic)
+        
+        if not sim_result or not real_result:
+            print("无法生成对比图表")
+            return
+        
+        # 准备数据
+        sim_data = sim_result['filtered_data'].copy()
+        real_data = real_result['filtered_data'].copy()
+        
+        sim_data['小时'] = sim_data['计划起飞'].dt.hour
+        real_data['小时'] = real_data['计划离港时间'].dt.hour
+        
+        sim_data['延误标记'] = sim_data['仿真延误分钟'] > self.delay_threshold
+        real_data['延误标记'] = real_data['起飞延误分钟'] > self.delay_threshold
+        
+        # 创建图表
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        title_suffix = "（排除系统性问题时段）" if exclude_systematic else "（包含所有时段）"
+        fig.suptitle(f'ZGGG机场积压时段高级对比分析{title_suffix}', fontsize=16)
+        
+        # 1. 每小时平均延误时间对比
+        sim_hourly_delay = sim_data.groupby('小时')['仿真延误分钟'].mean()
+        real_hourly_delay = real_data.groupby('小时')['起飞延误分钟'].mean()
+        
+        hours = range(24)
+        sim_delays = [sim_hourly_delay.get(h, 0) for h in hours]
+        real_delays = [real_hourly_delay.get(h, 0) for h in hours]
+        
+        x = np.arange(24)
+        width = 0.35
+        
+        axes[0,0].bar(x - width/2, real_delays, width, label='实际延误', color='orange', alpha=0.7)
+        axes[0,0].bar(x + width/2, sim_delays, width, label='仿真延误', color='skyblue', alpha=0.7)
+        axes[0,0].set_title('各小时平均延误时间对比')
+        axes[0,0].set_xlabel('小时')
+        axes[0,0].set_ylabel('平均延误(分钟)')
+        axes[0,0].legend()
+        axes[0,0].grid(True, alpha=0.3)
+        
+        # 2. 每小时延误航班数对比
+        # 修正数据准备
+        sim_data_copy = sim_data.copy()
+        real_data_copy = real_data.copy()
+        sim_data_copy['日期'] = sim_data_copy['计划起飞'].dt.date
+        real_data_copy['日期'] = real_data_copy['计划离港时间'].dt.date
+        
+        sim_hourly_delayed = sim_data_copy.groupby(['日期', '小时'])['延误标记'].sum().reset_index()
+        real_hourly_delayed = real_data_copy.groupby(['日期', '小时'])['延误标记'].sum().reset_index()
+        
+        sim_avg_delayed = sim_hourly_delayed.groupby('小时')['延误标记'].mean()
+        real_avg_delayed = real_hourly_delayed.groupby('小时')['延误标记'].mean()
+        
+        sim_delayed_counts = [sim_avg_delayed.get(h, 0) for h in hours]
+        real_delayed_counts = [real_avg_delayed.get(h, 0) for h in hours]
+        
+        axes[0,1].bar(x - width/2, real_delayed_counts, width, label='实际延误航班', color='red', alpha=0.7)
+        axes[0,1].bar(x + width/2, sim_delayed_counts, width, label='仿真延误航班', color='blue', alpha=0.7)
+        axes[0,1].axhline(y=self.backlog_threshold, color='black', linestyle='--', 
+                         label=f'积压阈值({self.backlog_threshold}班)')
+        axes[0,1].set_title('各小时日均延误航班数对比')
+        axes[0,1].set_xlabel('小时')
+        axes[0,1].set_ylabel('日均延误航班数')
+        axes[0,1].legend()
+        axes[0,1].grid(True, alpha=0.3)
+        
+        # 3. 积压时段识别结果对比
+        sim_backlog = sim_result['backlog_periods']
+        real_backlog = real_result['backlog_periods']
+        
+        # 标记积压时段
+        sim_backlog_hours = set(sim_backlog['小时'].unique()) if len(sim_backlog) > 0 else set()
+        real_backlog_hours = set(real_backlog['小时'].unique()) if len(real_backlog) > 0 else set()
+        
+        backlog_comparison = []
+        for h in hours:
+            if h in sim_backlog_hours and h in real_backlog_hours:
+                backlog_comparison.append(3)  # 都识别为积压
+            elif h in real_backlog_hours:
+                backlog_comparison.append(2)  # 仅实际为积压
+            elif h in sim_backlog_hours:
+                backlog_comparison.append(1)  # 仅仿真为积压
+            else:
+                backlog_comparison.append(0)  # 都不是积压
+        
+        colors = ['lightgray', 'lightblue', 'lightcoral', 'green']
+        labels = ['非积压', '仅仿真积压', '仅实际积压', '共同积压']
+        
+        bars = axes[0,2].bar(hours, [1]*24, color=[colors[bc] for bc in backlog_comparison])
+        axes[0,2].set_title('积压时段识别结果对比')
+        axes[0,2].set_xlabel('小时')
+        axes[0,2].set_ylabel('积压状态')
+        axes[0,2].set_ylim(0, 1.2)
+        
+        # 添加图例
+        legend_elements = [plt.Rectangle((0,0),1,1, color=colors[i], label=labels[i]) for i in range(4)]
+        axes[0,2].legend(handles=legend_elements, loc='upper right')
+        
+        # 4. 延误分布对比（仿真vs实际）
+        axes[1,0].hist(real_data['起飞延误分钟'], bins=50, alpha=0.5, label='实际延误', color='orange', density=True)
+        axes[1,0].hist(sim_data['仿真延误分钟'], bins=50, alpha=0.5, label='仿真延误', color='skyblue', density=True)
+        axes[1,0].axvline(x=self.delay_threshold, color='red', linestyle='--', 
+                         label=f'延误阈值({self.delay_threshold}分钟)')
+        axes[1,0].set_title('延误时间分布对比')
+        axes[1,0].set_xlabel('延误时间(分钟)')
+        axes[1,0].set_ylabel('概率密度')
+        axes[1,0].legend()
+        axes[1,0].grid(True, alpha=0.3)
+        
+        # 5. 系统性问题时段标识（如果排除了的话）
+        if exclude_systematic:
+            sim_problematic = sim_result['problematic_hours']
+            real_problematic = real_result['problematic_hours']
+            
+            sim_problematic_hours = [h['hour'] for h in sim_problematic]
+            real_problematic_hours = [h['hour'] for h in real_problematic]
+            
+            problematic_status = []
+            for h in hours:
+                if h in sim_problematic_hours and h in real_problematic_hours:
+                    problematic_status.append(3)  # 都识别为系统性问题
+                elif h in real_problematic_hours:
+                    problematic_status.append(2)  # 仅实际为系统性问题
+                elif h in sim_problematic_hours:
+                    problematic_status.append(1)  # 仅仿真为系统性问题
+                else:
+                    problematic_status.append(0)  # 都不是系统性问题
+            
+            problem_colors = ['white', 'lightblue', 'lightcoral', 'darkred']
+            problem_labels = ['正常时段', '仅仿真异常', '仅实际异常', '共同异常']
+            
+            axes[1,1].bar(hours, [1]*24, color=[problem_colors[ps] for ps in problematic_status])
+            axes[1,1].set_title('系统性问题时段识别对比')
+            axes[1,1].set_xlabel('小时')
+            axes[1,1].set_ylabel('问题状态')
+            axes[1,1].set_ylim(0, 1.2)
+            
+            # 添加图例
+            problem_legend = [plt.Rectangle((0,0),1,1, color=problem_colors[i], label=problem_labels[i]) for i in range(4)]
+            axes[1,1].legend(handles=problem_legend, loc='upper right')
+        else:
+            axes[1,1].text(0.5, 0.5, '未排除系统性问题时段\n所有数据均参与分析', 
+                          transform=axes[1,1].transAxes, ha='center', va='center', fontsize=12)
+            axes[1,1].set_title('系统性问题时段处理状态')
+        
+        # 6. 误差分析热力图
+        # 计算每个小时的误差矩阵
+        error_matrix = np.zeros((4, 24))  # 4种误差类型 × 24小时
+        
+        for h in hours:
+            # 延误航班数误差
+            sim_count = sim_avg_delayed.get(h, 0)
+            real_count = real_avg_delayed.get(h, 0)
+            count_error = abs(sim_count - real_count) / max(real_count, 1) * 100
+            error_matrix[0, h] = min(count_error, 100)  # 限制最大误差为100%
+            
+            # 平均延误时间误差
+            sim_delay = sim_hourly_delay.get(h, 0)
+            real_delay = real_hourly_delay.get(h, 0)
+            delay_error = abs(sim_delay - real_delay) / max(real_delay, 1) * 100
+            error_matrix[1, h] = min(delay_error, 100)
+            
+            # 积压识别一致性 (0表示一致，100表示完全不一致)
+            if (h in sim_backlog_hours and h in real_backlog_hours) or (h not in sim_backlog_hours and h not in real_backlog_hours):
+                error_matrix[2, h] = 0
+            else:
+                error_matrix[2, h] = 100
+                
+            # 系统性问题识别一致性
+            if exclude_systematic:
+                if (h in sim_problematic_hours and h in real_problematic_hours) or (h not in sim_problematic_hours and h not in real_problematic_hours):
+                    error_matrix[3, h] = 0
+                else:
+                    error_matrix[3, h] = 100
+            else:
+                error_matrix[3, h] = 0  # 未进行系统性问题分析
+        
+        im = axes[1,2].imshow(error_matrix, cmap='RdYlGn_r', aspect='auto', vmin=0, vmax=100)
+        axes[1,2].set_title('各时段误差热力图')
+        axes[1,2].set_xlabel('小时')
+        axes[1,2].set_ylabel('误差类型')
+        axes[1,2].set_yticks(range(4))
+        axes[1,2].set_yticklabels(['延误航班数', '平均延误时间', '积压识别', '系统性问题识别'])
+        axes[1,2].set_xticks(range(0, 24, 2))
+        axes[1,2].set_xticklabels(range(0, 24, 2))
+        
+        plt.colorbar(im, ax=axes[1,2], label='误差百分比(%)')
+        
+        plt.tight_layout()
+        
+        # 保存图表
+        filename_suffix = "_排除系统性问题" if exclude_systematic else "_包含所有时段"
+        filename = f'ZGGG积压时段高级对比分析{filename_suffix}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"高级对比图表已保存为: {filename}")
+        plt.show()
+        
+        return filename
 
-# 现在让我们测试完整的仿真系统
+def run_advanced_backlog_analysis():
+    """简化的高级积压分析运行函数"""
+    print("=== ZGGG机场高级积压分析快速运行 ===")
+    
+    # 使用推荐参数
+    simulator = ZGGGDepartureSimulator(
+        delay_threshold=15,    # 官方建议的延误阈值
+        backlog_threshold=10,  # 积压判定阈值
+        taxi_out_time=15,      # 标准taxi-out时间
+        base_rot=90           # 标准ROT时间
+    )
+    
+    print("✅ 初始化仿真器完成")
+    
+    # 数据载入和处理
+    data = simulator.load_departure_data()
+    simulator.classify_aircraft_types()
+    simulator.separate_flight_types()
+    
+    print("✅ 数据载入和预处理完成")
+    
+    # 仿真
+    simulation_results = simulator.simulate_runway_queue_full_month(verbose=False)
+    simulator.analyze_simulation_statistics()
+    
+    print("✅ 仿真计算完成")
+    
+    # 高级积压分析
+    print("\n--- 基础积压分析 ---")
+    basic_result = simulator.compare_backlog_periods()
+    
+    print("\n--- 高级积压分析（排除系统性问题）---")
+    advanced_result = simulator.compare_backlog_periods_advanced(exclude_systematic=True)
+    
+    # 生成可视化图表
+    print("\n--- 生成可视化图表 ---")
+    try:
+        chart = simulator.visualize_backlog_comparison_advanced(exclude_systematic=True)
+        print(f"✅ 图表已保存: {chart}")
+    except Exception as e:
+        print(f"⚠️  图表生成失败: {e}")
+    
+    # 总结结果
+    print(f"\n=== 分析结果总结 ===")
+    if basic_result and advanced_result:
+        print(f"基础分析评分: {basic_result['overall_score']:.1f}/100")
+        print(f"高级分析评分: {advanced_result['overall_score']:.1f}/100")
+        
+        if advanced_result['overall_score'] >= 80:
+            print("🏆 仿真质量优秀，可直接用于运营决策")
+        elif advanced_result['overall_score'] >= 70:
+            print("⚠️  仿真质量良好，建议适当调优")
+        else:
+            print("❌ 仿真质量需要改进")
+            
+        print(f"\n主要分析结果:")
+        print(f"- 积压时段重叠率: {advanced_result['overlap_rate']:.1f}%")
+        print(f"- 延误航班数误差: {advanced_result['strength_error']:.1f}%")
+        print(f"- 延误时间误差: {advanced_result['delay_time_error']:.1f}%")
+    
+    print("\n✅ 高级积压分析完成！")
+    return simulator, advanced_result
+
+# 现在让我们测试完整的仿真系统（集成高级积压分析）
 if __name__ == "__main__":
+    print("=== ZGGG机场仿真系统集成测试（包含高级积压分析）===")
+    
     # 参数优化测试 - 围绕官方建议的15分钟阈值进行调优，同时优化ROT参数
     delay_thresholds = [12, 15, 18]  # 测试不同延误阈值
     taxi_out_times = [10, 15, 20]    # 测试不同taxi-out时间
@@ -763,7 +1195,7 @@ if __name__ == "__main__":
     best_score = 0
     best_params = None
     
-    print("=== 参数优化测试（包含ROT优化）===")
+    print("\n=== 第一阶段：参数优化测试（基础积压分析）===")
     
     for delay_thresh in delay_thresholds:
         for taxi_time in taxi_out_times:
@@ -789,7 +1221,7 @@ if __name__ == "__main__":
                 # 分析统计
                 simulator.analyze_simulation_statistics()
                 
-                # 对比分析
+                # 基础对比分析
                 comparison_results = simulator.compare_backlog_periods()
             
                 # 记录最佳参数
@@ -805,7 +1237,7 @@ if __name__ == "__main__":
                 print(f"当前参数评分: {comparison_results['overall_score']:.1f}/100" if comparison_results else "无法计算评分")
     
     print(f"\n" + "="*60)
-    print("                  最优参数结果")
+    print("                  第一阶段最优参数结果")
     print("="*60)
     
     if best_params:
@@ -815,8 +1247,8 @@ if __name__ == "__main__":
         print(f"   基础ROT时间: {best_params['base_rot']} 秒")
         print(f"   综合评分: {best_params['score']:.1f}/100")
         
-        # 使用最优参数重新运行完整分析
-        print(f"\n=== 使用最优参数进行完整分析 ===")
+        # 使用最优参数进行高级分析
+        print(f"\n=== 第二阶段：使用最优参数进行高级积压分析 ===")
         final_simulator = ZGGGDepartureSimulator(
             delay_threshold=best_params['delay_threshold'],
             backlog_threshold=10,
@@ -829,18 +1261,79 @@ if __name__ == "__main__":
         final_simulator.classify_aircraft_types()
         final_simulator.separate_flight_types()
         final_results = final_simulator.simulate_runway_queue_full_month(verbose=False)
-        final_simulator.analyze_simulation_statistics()
-        final_comparison = final_simulator.compare_backlog_periods()
         
+        print(f"\n--- 基础统计分析 ---")
+        final_simulator.analyze_simulation_statistics()
+        
+        print(f"\n--- 基础积压对比分析 ---")
+        basic_comparison = final_simulator.compare_backlog_periods()
+        
+        print(f"\n--- 高级积压对比分析（排除系统性问题时段）---")
+        advanced_comparison = final_simulator.compare_backlog_periods_advanced(exclude_systematic=True)
+        
+        print(f"\n--- 高级积压对比分析（包含所有时段）---")
+        full_comparison = final_simulator.compare_backlog_periods_advanced(exclude_systematic=False)
+        
+        # 比较不同分析方法的效果
+        print(f"\n=== 不同分析方法效果对比 ===")
+        if basic_comparison and advanced_comparison and full_comparison:
+            print(f"基础分析评分: {basic_comparison['overall_score']:.1f}/100")
+            print(f"高级分析（排除系统性问题）评分: {advanced_comparison['overall_score']:.1f}/100")
+            print(f"高级分析（包含所有时段）评分: {full_comparison['overall_score']:.1f}/100")
+            
+            if advanced_comparison['overall_score'] > basic_comparison['overall_score']:
+                improvement = advanced_comparison['overall_score'] - basic_comparison['overall_score']
+                print(f"✅ 排除系统性问题后，仿真准确性提升 {improvement:.1f} 分")
+                print("🎯 建议使用高级积压分析（排除系统性问题时段）")
+            else:
+                print("⚠️  系统性问题识别对此数据集效果有限")
+        
+        # 生成可视化图表
+        print(f"\n--- 生成高级对比可视化图表 ---")
+        try:
+            # 生成排除系统性问题的图表
+            chart1 = final_simulator.visualize_backlog_comparison_advanced(exclude_systematic=True)
+            print(f"✅ 生成高级对比图表（排除系统性问题）: {chart1}")
+            
+            # 生成包含所有时段的图表
+            chart2 = final_simulator.visualize_backlog_comparison_advanced(exclude_systematic=False)
+            print(f"✅ 生成高级对比图表（包含所有时段）: {chart2}")
+            
+        except Exception as e:
+            print(f"⚠️  图表生成遇到问题: {e}")
+            
     else:
         print("❌ 未找到满意的参数组合，建议扩大搜索范围")
     
-    print(f"\n=== 完整仿真系统测试完成 ===")
-    print("系统功能:")
+    print(f"\n" + "="*60)
+    print("                完整仿真系统功能总结")
+    print("="*60)
+    print("🚀 核心功能:")
     print("1. ✅ 全月数据载入和预处理")
     print("2. ✅ 优化的天气停飞识别和延误计算")
     print("3. ✅ 机型分类和ROT参数设定")
     print("4. ✅ 全月双跑道排队仿真")
-    print("5. ✅ 积压时段识别和对比分析")
+    print("5. ✅ 基础积压时段识别和对比分析")
     print("6. ✅ 参数自动优化")
-    print("\n仿真系统已准备就绪，可用于进一步的运营分析。")
+    print()
+    print("🎯 高级功能（集成自ZGGG积压时段分析.py）:")
+    print("7. ✅ 系统性问题时段识别算法")
+    print("8. ✅ 高级积压时段分析（可选择排除系统性问题）")
+    print("9. ✅ 增强的积压对比分析（延误航班数+延误时间）")
+    print("10.✅ 高级可视化图表生成")
+    print("11.✅ 多维度误差分析热力图")
+    print()
+    print("📊 分析维度:")
+    print("- 积压时段重叠率分析")
+    print("- 延误航班数准确性分析")
+    print("- 平均延误时间准确性分析")
+    print("- 系统性问题时段识别准确性")
+    print("- 积压区间端点误差分析")
+    print("- 综合评分和仿真质量评估")
+    print()
+    print("🏆 系统已完全集成积压时段分析功能，可用于:")
+    print("- 机场运营优化决策支持")
+    print("- 延误预测和积压时段预警") 
+    print("- 跑道调度策略优化")
+    print("- 航空公司运营计划调整")
+    print("\n仿真系统测试完成，已准备就绪！")

@@ -1,0 +1,50 @@
+# ZGGG机场仿真系统依赖配置
+# 使用命令安装: pip install -r requirements.txt
+
+# 数据处理
+pandas>=1.5.0
+numpy>=1.21.0
+openpyxl>=3.0.9
+
+# 时间处理
+python-dateutil>=2.8.0
+
+# 数学计算
+scipy>=1.9.0
+
+# 可视化 (可选)
+matplotlib>=3.5.0
+# seaborn>=0.11.0  # 注释掉以避免import错误
+
+# Excel高级功能
+xlsxwriter>=3.0.0
+
+# 系统工具
+tqdm>=4.64.0
+
+# 开发和测试 (可选)
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# 代码质量 (可选)
+black>=22.0.0
+flake8>=5.0.0
+
+# 性能分析 (可选)
+memory-profiler>=0.60.0
+
+# 日志处理
+loguru>=0.6.0
+
+# 配置文件处理
+pyyaml>=6.0
+toml>=0.10.0
+
+# JSON处理增强
+ujson>=5.0.0
+
+# 文件系统操作
+pathlib2>=2.3.0
+
+# 并发处理
+concurrent-futures>=3.1.0

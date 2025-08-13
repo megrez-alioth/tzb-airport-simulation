@@ -1,0 +1,25 @@
+{
+  "runway_config": {
+    "departure_runways": [
+      "01L",
+      "01R"
+    ],
+    "arrival_runways": [
+      "07L",
+      "07R"
+    ],
+    "max_departure_runways": 2,
+    "max_arrival_runways": 2
+  },
+  "time_parameters": {
+    "rot_takeoff": 60,
+    "rot_landing": 45,
+    "taxi_out_mean": 18,
+    "taxi_in_mean": 18,
+    "taxi_out_std": 5,
+    "taxi_in_std": 5,
+    "delay_threshold": 15,
+    "backlog_threshold": 10
+  },
+  "wake_separation": {
+    
